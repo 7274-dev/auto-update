@@ -39,16 +39,36 @@ fn deploy_commit(commit: Oid, mut current_deployment: Option<Deployment>) -> Res
     };
 
     if current_deployment.as_ref().is_some() {
-        let new_deployment_head = repo.head().unwrap();
-        let new_deployment_tree = new_deployment_head.peel_to_tree().unwrap();
+        let new_deployment_head = match repo.head() {
+            Ok(head) => head,
+            Err(_) => return Err(())
+        };
+
+        let new_deployment_tree = match new_deployment_head.peel_to_tree() {
+            Ok(tree) => tree,
+            Err(_) => return Err(()) 
+        };
 
         let tree_len = new_deployment_tree.len();
 
-        let current_deployment: &mut Deployment = current_deployment.as_mut().unwrap();
-        let deployed_commit = repo.find_commit(current_deployment.commit_hash).unwrap();
-        let curr_deployment_tree_len = deployed_commit.tree().unwrap().len();
+        let current_deployment: &mut Deployment = match current_deployment.as_mut() {
+            Some(mut_ref) => mut_ref,
+            None => return Err(())
+        };
 
-        if tree_len < curr_deployment_tree_len {
+        let deployed_commit = match repo.find_commit(current_deployment.commit_hash) {
+            Ok(c) => c,
+            Err(_) => return Err(())
+        };
+
+        let curr_deployment_tree = match deployed_commit.tree() {
+            Ok(tree) => tree,
+            Err(_) => return Err(())
+        };
+
+        let curr_deployment_tree_len = curr_deployment_tree.len();
+
+        if tree_len <= curr_deployment_tree_len {
             return Err(());
         }
 
@@ -56,43 +76,67 @@ fn deploy_commit(commit: Oid, mut current_deployment: Option<Deployment>) -> Res
     }
 
     set_current_dir(Path::new(DEPLOYMENT_PATH)).unwrap();
-    Command::new(CHMOD_COMMAND.program)
-                    .args(CHMOD_COMMAND.args.split(" "))
-                    .spawn().unwrap()
-                    .wait().unwrap();
-    match Command::new(BUILD_COMMAND.program)
-                    .args(BUILD_COMMAND.args.split(" ")).status() {
+    match Command::new(CHMOD_COMMAND.program).args(CHMOD_COMMAND.args.split(" ")).spawn() {
+        Ok(mut x) => {
+            match x.wait() {
+                Ok(_) => (),
+                Err(_) => return Err(())
+            };
+        },
+        Err(_) => return Err(())
+    }
+    match Command::new(BUILD_COMMAND.program).args(BUILD_COMMAND.args.split(" ")).status() {
         Ok(status) => {
             if !status.success() {
                 println!("Build failed.");
                 return Err(())
             }
         },
-        Err(e) => {
-            println!("{:?}", e);
+        Err(_) => {
             return Err(())
         }
     };
 
     let mut target_jar_file: Option<PathBuf> = None; 
 
-    set_current_dir(Path::new("build/libs")).unwrap();
-    let files: ReadDir = read_dir(Path::new(".")).unwrap();
+    match set_current_dir(Path::new("build/libs")) {
+        Ok(_) => (),
+        Err(_) => return Err(()) 
+    };
+
+    let files: ReadDir = match read_dir(Path::new(".")) {
+        Ok(dir) => dir,
+        Err(_) => return Err(())
+    };
+
     for file in files {
         if file.is_err() {
             continue;
         }
+        
+        let file_ref = match file.as_ref() {
+            Ok(r) => r,
+            Err(_) => return Err(())
+        };
 
-        if file.as_ref().unwrap().path().extension().unwrap() == "jar" {
-            target_jar_file = Some(file.unwrap().path());
+        let file_path = file_ref.path(); 
+
+        let extension = match file_path.extension() {
+            Some(e) => e,
+            None => return Err(())
+        };
+
+        if extension == "jar" {
+            target_jar_file = Some(file.unwrap().path()); // safe to unwrap here as the file cannot be an error
         }
     }
 
     if target_jar_file == None {
         return Err(())
     }
-    let target_jar_file = target_jar_file.unwrap();
-    let target_jar_file = target_jar_file.to_str().unwrap();
+
+    let target_jar_file = target_jar_file.unwrap(); // safe to unwrap here, we checked if the target_jar file is None
+    let target_jar_file = target_jar_file.to_str().unwrap(); // safe to unwrap here too
 
     let args_with_jarfile = DEPLOY_COMMAND.args.replace("%s", target_jar_file);
 
@@ -122,6 +166,4 @@ fn main() {
             println!("ffs");
         }
     };
-
-
 }
