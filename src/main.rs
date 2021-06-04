@@ -23,7 +23,10 @@ struct Deployment {
 
 fn deploy_commit(commit: Oid, mut current_deployment: Option<Deployment>) -> Result<Deployment, ()> {
     if Path::new(DEPLOYMENT_PATH).exists() {
-        remove_dir_all(Path::new(DEPLOYMENT_PATH)).unwrap();
+        match remove_dir_all(Path::new(DEPLOYMENT_PATH)) {
+            Ok(_) => (),
+            Err(_) => return Err(())
+        };
     }
 
     create_dir(Path::new(DEPLOYMENT_PATH)).unwrap();
