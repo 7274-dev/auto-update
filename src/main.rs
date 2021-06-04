@@ -29,7 +29,10 @@ fn deploy_commit(commit: Oid, mut current_deployment: Option<Deployment>) -> Res
         };
     }
 
-    create_dir(Path::new(DEPLOYMENT_PATH)).unwrap();
+    match create_dir(Path::new(DEPLOYMENT_PATH)) {
+        Ok(_) => (),
+        Err(_) => return Err(())
+    };
 
     let repo = match Repository::clone(REPOSITORY_URL, DEPLOYMENT_PATH) {
         Ok(repo) => repo,
