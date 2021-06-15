@@ -1,6 +1,9 @@
 extern crate git2;
+#[macro_use] extern crate rocket;
 
 use std::{env::set_current_dir, fs::{ReadDir, create_dir, read_dir, remove_dir_all}, path::{Path, PathBuf}, process::{Child, Command}};
+
+use dotenv::dotenv;
 
 use git2::{Oid, Repository};
 
@@ -161,15 +164,16 @@ fn deploy_commit(commit: Oid, mut current_deployment: Option<Deployment>) -> Res
     Ok(new_deployment)
 }
 
-fn main() {
-    let commit = Oid::from_str("a4632144411f10ec52dc94e9fcc5fc91fa11bd19").unwrap();
+#[launch]
+fn rocket() -> _ {
+    dotenv.ok();
 
-    match deploy_commit(commit, None) {
-        Ok(d) => {
-            println!("Yay!");
-        },
-        Err(_) => {
-            println!("ffs");
-        }
+    let password = match std::var("PASSWORD") {
+        Ok(v) => v,
+        Err(_) => panic!("The password enviroment variable is not set!")
     };
+
+    rocket::build()
+        .manage(password)
+        .mount("/", routes![])
 }
