@@ -61,6 +61,8 @@ dependencies = [
  "dotenv",
  "git2",
  "rocket",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
