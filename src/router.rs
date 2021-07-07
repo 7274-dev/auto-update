@@ -1,12 +1,14 @@
-use std::{borrow::Cow, io::{BufRead, BufReader}, ops::Deref, sync::{Arc, Mutex}};
+use std::{ops::{DerefMut}, sync::{Arc}, time::Duration};
 
+use futures::lock::Mutex;
 use git2::Oid;
-use rocket::{Route, State, response::content::Json};
+use rocket::{Route, State};
 use serde::{Serialize, Deserialize};
+use tokio::{io::{AsyncBufReadExt, BufReader}, time::timeout};
 
 use crate::{Deployment, request::JsonResponse};
 
-type DeploymentState<'a> = State<Arc<Mutex<Option<&'a mut Deployment>>>>;
+type DeploymentState<'a> = State<Arc<Mutex<Option<Deployment>>>>;
 
 #[derive(Serialize, Deserialize)]
 struct ProgramOutput {
@@ -15,7 +17,7 @@ struct ProgramOutput {
 }
 
 #[post("/deploy/<commit>?<password>")]
-pub fn deploy(commit: &str, deployment: &DeploymentState, correct_password: &State<String>, password: &str) -> JsonResponse<String> {
+async fn deploy<'a>(commit: &str, deployment: &DeploymentState<'static>, correct_password: &State<String>, password: &str) -> JsonResponse<String> {
     let correct_password = correct_password.to_string();
     if correct_password != password {
         return JsonResponse::new("Incorrect password!".to_string(), 401);
@@ -26,28 +28,29 @@ pub fn deploy(commit: &str, deployment: &DeploymentState, correct_password: &Sta
         Err(_) => return JsonResponse::new("Bad commit id.".to_string(), 400)
     };
 
-    let mut deployment =  deployment.lock().unwrap();
-    let mut deployment = deployment.as_deref_mut();
+    let mut deployment = deployment.lock().await;
 
-    let mut new_deployment = match Deployment::deploy_commit(oid, deployment.as_deref_mut()) {
-        Ok(dp) => dp,
-        Err(_) => return JsonResponse::new("Error!".to_string(), 400)
+    *deployment = match Deployment::deploy_commit(oid, deployment.deref_mut()).await {
+        Ok(dp) => Some(dp),
+        Err(_) => return JsonResponse::new("Error!".to_string(), 400),
     };
 
-    if deployment.is_none() {
-        deployment = Some(&mut new_deployment);
-    }
-    else {
-        let mut deployment = deployment.unwrap();
-        deployment.process = new_deployment.process;
-        deployment.commit_hash = new_deployment.commit_hash;
-    }
+    // *deployment = Some(&mut new_deployment.into_inner());
+
+    // if deployment.is_none() {
+    //       *deployment = Some(&mut new_deployment);
+    // }
+    // else {
+    //     let mut deployment = deployment.unwrap();
+    //     deployment.process = new_deployment.process;
+    //     deployment.commit_hash = new_deployment.commit_hash;
+    // }
 
     JsonResponse::new("Successfully deployed commit!".to_string(), 200)
 }
 
 #[get("/logs?<password>")]
-pub fn get_logs(password: &str, correct_password: &State<String>, deployment: &DeploymentState) -> JsonResponse<String> {
+pub async fn get_logs(password: &str, correct_password: &State<String>, deployment: &DeploymentState<'static>) -> JsonResponse<String> {
     let password = password.to_string();
     let correct_password: String = correct_password.to_string();
 
@@ -55,49 +58,58 @@ pub fn get_logs(password: &str, correct_password: &State<String>, deployment: &D
         return JsonResponse::new("Incorrect password!".to_string(), 401);
     }
 
-    let deployment = &mut *deployment.lock().unwrap();
-    if deployment.is_none() {
-        return JsonResponse::new("Nothing currently deployed!".to_string(), 400);
-    }
-
-    let deployment = deployment.as_deref_mut().unwrap();
-
-
+    let deployment = &mut *deployment.lock().await;
+    let deployment = &mut match deployment {
+        Some(dep) => dep,
+        None => return JsonResponse::new("Nothing currently deployed!".to_string(), 400)
+    };
 
     let stdout = match &mut deployment.process.stdout {
         Some(stdout) => {
-            let reader = BufReader::new(stdout);
             let mut output = String::new();
-            reader.lines()
-                    .filter_map(|line| line.ok())
-                    .for_each(|line| output += &line);
+            let mut reader = BufReader::new(stdout).lines();
+            loop {
+                let timeout = match timeout(Duration::from_millis(100), reader.next_line()).await {
+                    Ok(t) => t,
+                    Err(_) => break 
+                };
+
+                let line = match timeout {
+                    Ok(t) => t.unwrap(),
+                    Err(_) => break
+                };
+                
+                output += &line;
+            }
+
             output
         },
         None => "".to_string()
     };
 
-    let stderr = match &mut deployment.process.stderr {
-        Some(stderr) => {
-            let reader = BufReader::new(stderr);
-            let mut output = String::new();
-            reader.lines()
-                    .filter_map(|line| line.ok())
-                    .for_each(|line| output += &line);
-            output
-        },
-        None => "".to_string()
-    };
+    // let stderr = match &mut deployment.process.stderr {
+    //     Some(stderr) => {
+    //         let reader = BufReader::new(stderr);
+    //         let mut output = String::new();
+    //         reader.lines()
+    //                 .filter_map(|line| line.ok())
+    //                 .for_each(|line| output += &line);
+    //         output
+    //     },
+    //     None => "".to_string()
+    // };
 
-    let program_output = ProgramOutput { stdout, stderr };
-    let program_output = match serde_json::to_string(&program_output) {
-        Ok(s) => s,
-        Err(_) => return JsonResponse::new("Failed to serialize program output".to_string(), 500)
-    };
+    // let program_output = ProgramOutput { stdout, stderr };
+    // let program_output = match serde_json::to_string(&program_output) {
+        // Ok(s) => s,
+        // Err(_) => return JsonResponse::new("Failed to serialize program output".to_string(), 500)
+    // };
 
-    JsonResponse::new(program_output.clone(), 200)
+    // JsonResponse::new(program_output.clone(), 200)
+    JsonResponse::new(stdout, 200)
 }
 
 
 pub fn routes() -> Vec<Route> {
-    routes![deploy]
+    routes![deploy, get_logs]
 }

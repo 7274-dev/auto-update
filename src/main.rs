@@ -1,12 +1,15 @@
 extern crate git2;
 #[macro_use] extern crate rocket;
 
-use std::{env::set_current_dir, fs::{ReadDir, create_dir, read_dir, remove_dir_all}, path::{Path, PathBuf}, process::{Child, Command}, sync::Arc};
+use std::{env::set_current_dir, fs::{ReadDir, create_dir, read_dir, remove_dir_all}, ops::{Deref, DerefMut}, path::{Path, PathBuf}, sync::{Arc}};
 
+use async_process::Stdio;
 use dotenv::dotenv;
 
+use futures::lock::Mutex;
 use git2::{Oid, Repository};
-use rocket::futures::lock::Mutex;
+
+use tokio::{io::AsyncReadExt, process::{Child, ChildStdout, Command}};
 
 use crate::router::routes;
 
@@ -30,8 +33,15 @@ pub struct Deployment {
     pub process: Child
 }
 
+async fn read_stdout(stdout: &mut ChildStdout) -> String {
+    let mut output = String::new();
+    
+
+    output
+}
+
 impl Deployment {
-    fn deploy_commit(commit: Oid, current_deployment: Option<&mut Deployment>) -> Result<Deployment, ()> {
+    async fn deploy_commit<'a>(commit: Oid, current_deployment: &mut Option<Deployment>) -> Result<Deployment, ()> {
         if Path::new(DEPLOYMENT_PATH).exists() {
             match remove_dir_all(Path::new(DEPLOYMENT_PATH)) {
                 Ok(_) => (),
@@ -54,54 +64,52 @@ impl Deployment {
             Err(_) => return  Err(()) 
         };
     
-        if current_deployment.as_ref().is_some() {
-            let new_deployment_head = match repo.head() {
-                Ok(head) => head,
-                Err(_) => return Err(())
-            };
-    
-            let new_deployment_tree = match new_deployment_head.peel_to_tree() {
-                Ok(tree) => tree,
-                Err(_) => return Err(()) 
-            };
-    
-            let tree_len = new_deployment_tree.len();
+        if current_deployment.is_some() {
+            // let new_deployment_head = match repo.head() {
+            //     Ok(head) => head,
+            //     Err(_) => return Err(())
+            // };
     
             let current_deployment: &mut Deployment = match current_deployment {
                 Some(mut_ref) => mut_ref,
                 None => return Err(())
             };
     
-            let deployed_commit = match repo.find_commit(current_deployment.commit_hash) {
-                Ok(c) => c,
+            let curr_deployment_tree_len = match repo.find_commit(current_deployment.commit_hash) {
+                Ok(c) => match c.tree() {
+                    Ok(tree) => tree.len(),
+                    Err(_) => return Err(())
+                },
                 Err(_) => return Err(())
             };
     
-            let curr_deployment_tree = match deployed_commit.tree() {
-                Ok(tree) => tree,
+            // let curr_deployment_tree = match deployed_commit.tree() {
+            //     Ok(tree) => tree,
+            //     Err(_) => return Err(())
+            // };
+    
+            // let curr_deployment_tree_len = curr_deployment_tree.len();
+    
+            if match repo.head() {
+                Ok(head) => match head.peel_to_tree() {
+                    Ok(tree) => tree.len(),
+                    Err(_) => return Err(()) 
+                },
                 Err(_) => return Err(())
-            };
-    
-            let curr_deployment_tree_len = curr_deployment_tree.len();
-    
-            if tree_len <= curr_deployment_tree_len {
+            } <= curr_deployment_tree_len {
                 return Err(());
             }
     
-            current_deployment.process.kill().unwrap();
+            current_deployment.process.kill().await;
         }
     
         set_current_dir(Path::new(DEPLOYMENT_PATH)).unwrap();
-        match Command::new(CHMOD_COMMAND.program).args(CHMOD_COMMAND.args.split(" ")).spawn() {
-            Ok(mut x) => {
-                match x.wait() {
-                    Ok(_) => (),
-                    Err(_) => return Err(())
-                };
-            },
+        match &mut Command::new(CHMOD_COMMAND.program).args(CHMOD_COMMAND.args.split(" ")).spawn() {
+            Ok(c) => c.wait().await,
             Err(_) => return Err(())
-        }
-        match Command::new(BUILD_COMMAND.program).args(BUILD_COMMAND.args.split(" ")).status() {
+        };
+
+        match Command::new(BUILD_COMMAND.program).args(BUILD_COMMAND.args.split(" ")).status().await {
             Ok(status) => {
                 if !status.success() {
                     println!("Build failed.");
@@ -158,6 +166,8 @@ impl Deployment {
     
         let child = match Command::new(DEPLOY_COMMAND.program)
                 .args(args_with_jarfile.split(" "))
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
                 .spawn() {
             Ok(child) => child,
             Err(_) => {
