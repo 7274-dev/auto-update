@@ -1,7 +1,7 @@
 extern crate git2;
 #[macro_use] extern crate rocket;
 
-use std::{env::set_current_dir, fs::{ReadDir, create_dir, read_dir, remove_dir_all}, ops::{Deref, DerefMut}, path::{Path, PathBuf}, sync::{Arc}};
+use std::{env::set_current_dir, fs::{ReadDir, create_dir, read_dir, remove_dir_all}, path::{Path, PathBuf}, sync::{Arc}};
 
 use async_process::Stdio;
 use dotenv::dotenv;
@@ -9,12 +9,13 @@ use dotenv::dotenv;
 use futures::lock::Mutex;
 use git2::{Oid, Repository};
 
-use tokio::{io::AsyncReadExt, process::{Child, ChildStdout, Command}};
+use tokio::{process::{Child, Command}};
 
 use crate::router::routes;
 
 pub mod router;
 pub mod request;
+pub mod routes;
 
 struct Cmd {
     pub program: &'static str,
@@ -30,14 +31,8 @@ const DEPLOY_COMMAND: Cmd = Cmd { program: "java", args: "-jar %s" };
 
 pub struct Deployment {
     pub commit_hash: Oid,
-    pub process: Child
-}
-
-async fn read_stdout(stdout: &mut ChildStdout) -> String {
-    let mut output = String::new();
-    
-
-    output
+    pub process: Child,
+    pub logs: String
 }
 
 impl Deployment {
@@ -48,6 +43,7 @@ impl Deployment {
                 Err(_) => return Err(())
             };
         }
+
     
         match create_dir(Path::new(DEPLOYMENT_PATH)) {
             Ok(_) => (),
@@ -65,11 +61,7 @@ impl Deployment {
         };
     
         if current_deployment.is_some() {
-            // let new_deployment_head = match repo.head() {
-            //     Ok(head) => head,
-            //     Err(_) => return Err(())
-            // };
-    
+            // a lot of chained matches to avoid lifetime errors here
             let current_deployment: &mut Deployment = match current_deployment {
                 Some(mut_ref) => mut_ref,
                 None => return Err(())
@@ -83,13 +75,6 @@ impl Deployment {
                 Err(_) => return Err(())
             };
     
-            // let curr_deployment_tree = match deployed_commit.tree() {
-            //     Ok(tree) => tree,
-            //     Err(_) => return Err(())
-            // };
-    
-            // let curr_deployment_tree_len = curr_deployment_tree.len();
-    
             if match repo.head() {
                 Ok(head) => match head.peel_to_tree() {
                     Ok(tree) => tree.len(),
@@ -100,12 +85,20 @@ impl Deployment {
                 return Err(());
             }
     
-            current_deployment.process.kill().await;
+            match current_deployment.process.kill().await {
+                Ok(_) => (),
+                Err(_) => return Err(())
+            };
         }
     
         set_current_dir(Path::new(DEPLOYMENT_PATH)).unwrap();
         match &mut Command::new(CHMOD_COMMAND.program).args(CHMOD_COMMAND.args.split(" ")).spawn() {
-            Ok(c) => c.wait().await,
+            Ok(c) => {
+                match c.wait().await {
+                    Ok(_) => (),
+                    Err(_) => return Err(())
+                }
+            },
             Err(_) => return Err(())
         };
 
@@ -176,7 +169,7 @@ impl Deployment {
             }
         };
     
-        let new_deployment = Deployment { commit_hash: commit, process: child };
+        let new_deployment = Deployment { commit_hash: commit, process: child, logs: String::new() };
     
         Ok(new_deployment)
     }
