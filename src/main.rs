@@ -4,6 +4,7 @@ extern crate git2;
 use std::{env::set_current_dir, fs::{ReadDir, create_dir, read_dir, remove_dir_all}, path::{Path, PathBuf}, sync::{Arc}};
 
 use async_process::Stdio;
+use chrono::{DateTime, NaiveDateTime, Utc};
 use dotenv::dotenv;
 
 use futures::lock::Mutex;
@@ -67,21 +68,28 @@ impl Deployment {
                 None => return Err(())
             };
     
-            let curr_deployment_tree_len = match repo.find_commit(current_deployment.commit_hash) {
-                Ok(c) => match c.tree() {
-                    Ok(tree) => tree.len(),
-                    Err(_) => return Err(())
+            let curr_deployment_commit_datetime = match repo.find_commit(current_deployment.commit_hash) {
+                Ok(c) => {
+                    let naive_datetime = NaiveDateTime::from_timestamp(c.time().seconds(), 0);
+                    let datetime: DateTime<Utc> = DateTime::from_utc(naive_datetime, Utc);
+                    datetime
+                }
+                Err(_) => return Err(())
+            };
+
+            let new_deployment_commit_datetime = match repo.head() {
+                Ok(head) => match head.peel_to_commit() {
+                    Ok(c) => {
+                        let naive_datetime = NaiveDateTime::from_timestamp(c.time().seconds(), 0);
+                        let datetime: DateTime<Utc> = DateTime::from_utc(naive_datetime, Utc);
+                        datetime
+                    },
+                    Err(_) => return Err(()) 
                 },
                 Err(_) => return Err(())
             };
     
-            if match repo.head() {
-                Ok(head) => match head.peel_to_tree() {
-                    Ok(tree) => tree.len(),
-                    Err(_) => return Err(()) 
-                },
-                Err(_) => return Err(())
-            } <= curr_deployment_tree_len {
+            if new_deployment_commit_datetime <= curr_deployment_commit_datetime {
                 return Err(());
             }
     
